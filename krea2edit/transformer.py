@@ -17,7 +17,7 @@ from diffusers import ModelMixin as ModelMixin
 from diffusers.utils import BaseOutput
 from safetensors.torch import load_file
 
-from krea2edit.attention import (
+from krea2edit.attn_backend import (
     PrefixKrea2AttnProcessor,
     build_prefix_attention,
 )

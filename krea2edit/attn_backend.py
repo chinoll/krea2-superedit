@@ -1,6 +1,7 @@
-"""Reference self-attention and optional routing through learned virtual tokens."""
+"""Attention backends and masks for reference-conditioned Krea2."""
 
 from dataclasses import dataclass
+from functools import cache
 
 import torch
 import torch.nn.functional as F
@@ -147,6 +148,30 @@ def flex_prefix_attention(q, k, v, layout):
     )
 
 
+@cache
+def _get_fa4_mask():
+    # Load CuTe only when the FA4 backend is used.
+    import cutlass
+    import cutlass.cute as cute
+
+    @cute.jit
+    def prefix_mask(batch, head, q_idx, kv_idx, seqlen_info, aux_tensors):
+        # FA4 uses sample-local positions; aux data uses packed global offsets.
+        # Clamp tile-tail queries; FA4 masks padded lanes.
+        query = cute.make_rmem_tensor(1, cutlass.Int32)
+        query.store(q_idx)
+        key_start = cute.make_rmem_tensor(1, cutlass.Int32)
+        key_end = cute.make_rmem_tensor(1, cutlass.Int32)
+        packed_query = seqlen_info.offset_q + cutlass.min(
+            query[0], seqlen_info.seqlen_q - 1
+        )
+        key_start[0] = aux_tensors[0][packed_query]
+        key_end[0] = aux_tensors[1][packed_query]
+        return (kv_idx >= key_start.load()) & (kv_idx < key_end.load())
+
+    return prefix_mask
+
+
 def prefix_attention(q, k, v, layout):
     # Current FA4 supports mask_mod backward on SM90/100/110, but not SM120.
     if (
@@ -159,8 +184,6 @@ def prefix_attention(q, k, v, layout):
         except ImportError:
             pass
         else:
-            from krea2edit.fa4_mask import prefix_mask
-
             output = flash_attn_varlen_func(
                 q.contiguous(),
                 k.contiguous(),
@@ -169,7 +192,7 @@ def prefix_attention(q, k, v, layout):
                 cu_seqlens_k=layout.cu_seqlens_k,
                 max_seqlen_q=max(layout.query_lengths),
                 max_seqlen_k=max(layout.key_lengths),
-                mask_mod=prefix_mask,
+                mask_mod=_get_fa4_mask(),
                 aux_tensors=[layout.key_starts, layout.key_ends],
                 causal=False,
             )
