@@ -1,0 +1,173 @@
+project_name: krea2edit
+output_dir: /data/krea2edit_runs/lora_512_8gpu_muon
+seed: 42
+
+distributed:
+  deepspeed_zero2: true
+
+data:
+  manifest: /dev/shm/krea2edit_20260901/train/manifest.jsonl
+  min_image_pixels: 147456
+  max_image_pixels: 262144
+  alpha_transparency_threshold: 8
+  num_workers: 4
+
+model:
+  dtype: bf16
+  # Original weights are converted in memory when each training process starts.
+  name_or_path: /dev/shm/krea2edit_20260901/models/Krea-2-Raw/raw.safetensors
+  text_encoder_name_or_path: /dev/shm/krea2edit_20260901/models/Krea-2-Raw/text_encoder
+  vae_name_or_path: /dev/shm/krea2edit_20260901/models/Krea-2-Raw
+  processor_name_or_path: Qwen/Qwen3-VL-4B-Instruct
+  grounding_max_px: 512
+  grounding_jitter_min: 384
+  max_prompt_tokens: 384
+  num_virtual_tokens: 16
+  quantization:
+    dit:
+      backend: quanto
+      weights: qfloat8
+    text_encoder:
+      backend: quanto
+      weights: qint8
+
+lora:
+  rank: 64
+  alpha: 64
+  dropout: 0.0
+  # gaussian preserves the previous behavior; nora_init normalizes every
+  # down-projection column once before training, then trains as standard LoRA.
+  initialization: nora_init  # gaussian or nora_init
+  target_modules: all-linear
+
+train:
+  batch_size: 4
+  steps: 2000
+  gradient_accumulation: 4
+  gradient_checkpointing: true
+  # Sample independently for each item in the training batch.
+  reference_attention_dropout: 0.5
+  # EMA accumulates trainable DiT/LoRA tensors in FP32 on the accelerator.
+  # During the first N optimizer steps the effective decay is 0 (exact copy).
+  ema:
+    enabled: true
+    decay: 0.9999
+    warmup_steps: 100
+    update_every: 1
+    device: accelerator
+  # Opt-in Self-Flow. Set enabled=true and loss.weights.self_flow=0.8 to use
+  # the paper recipe; this adds one EMA-teacher forward per micro-batch.
+  self_flow:
+    enabled: false
+    mask_ratio: 0.25
+    student_layer_ratio: 0.3
+    teacher_layer_ratio: 0.7
+    projection: mlp  # mlp or identity
+    projection_hidden_dim: 1024
+  vae_latent_strategy: mode
+  branch_sampling_weights:
+    edit: 0.75
+    instruction_dropout: 0.10
+    noop: 0.15
+  noop_prompts:
+    - "Keep the image exactly unchanged."
+    - "Make no changes to the image."
+    - "Preserve the image exactly as it is."
+    - "Return the image without any edits."
+    - "Leave every visual detail unchanged."
+    - "Do not alter anything in the image."
+  loss:
+    weights:
+      fm: 1.0
+      perceptual: 0.1
+      pixel: 0.1
+      self_flow: 0.0
+    pixel_type: mse
+    huber_delta: 1.0
+    charbonnier_epsilon: 0.001
+    # Checkpoint every predicted VAE decode and every enabled perceptual
+    # backbone independently. Models remain frozen and in eval mode.
+    gradient_checkpointing: true
+    perceptual_dtype: bf16
+    # input_size is configured independently per backbone. Prediction and
+    # target are both resized directly to it. Remove input_size from one entry
+    # to use that backbone's aspect-preserving min/max range fitting instead.
+    # Fixed H/W must be inside min/max and divisible by the model patch size.
+    perceptual_backbones:
+      - name: tipsv2
+        model_path: google/tipsv2-b14
+        input_size: 448
+        min_input_size: 224
+        max_input_size: 448
+        weight: 0.0
+      - name: dinov2
+        model_path: facebook/dinov2-base
+        input_size: 518
+        min_input_size: 224
+        max_input_size: 518
+        weight: 1.0
+      - name: dinov3
+        model_path: facebook/dinov3-vits16-pretrain-lvd1689m
+        # Main global crop: 256. High-resolution phase: 512/768.
+        input_size: 512
+        min_input_size: 256
+        max_input_size: 768
+        weight: 0.0
+      - name: vgg
+        input_size: 224
+        min_input_size: 64
+        max_input_size: 224
+        weight: 1.0
+  optimizer: deepspeed_muon
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.01
+  muon_lr: 0.002
+  muon_momentum: 0.95
+  muon_weight_decay: 0.01
+  muon_ns_method: gram
+  adam_lr: 0.00012
+  adam_betas: [0.9, 0.999]
+  adam_eps: 1.0e-8
+  adam_weight_decay: 0.01
+  max_grad_norm: 0.0
+  lr_scheduler: constant_with_warmup
+  warmup_steps: 1000
+  timestep_sampling:
+    strategy: weighted
+    logit_mean: 0.0
+    logit_std: 1.0
+    mode_scale: 1.29
+  log_every: 1
+  save_every: 500
+  resume_from: null
+
+sample:
+  enabled: true
+  manifest: /dev/shm/krea2edit_20260901/validation/manifest.jsonl
+  every: 500
+  steps: 20
+  guidance_scale: 4.5
+  negative_prompt: ""
+  schedule_mu: null
+  drop_reference_attention: false
+  samples:
+    - id: conceptedit__conceptedit-enhanced-random-batch_4-45459_0_3
+      width: 512
+      height: 512
+      seed: 42
+    - id: noobedit__noob-gamecg-001823291-edit1
+      width: 512
+      height: 512
+      seed: 43
+    - id: conceptedit__conceptedit-enhanced-random-batch_30-307809_0_7
+      width: 512
+      height: 512
+      seed: 44
+    - id: noobedit__noob-gamecg-001836230-edit1
+      width: 512
+      height: 512
+      seed: 45
+
+logging:
+  backend: wandb

@@ -1,0 +1,22 @@
+torch>=2.9
+torchvision
+accelerate>=1.8
+deepspeed>=0.19.6
+diffusers>=0.39.0
+transformers>=4.57
+sentencepiece
+peft>=0.17
+optimum-quanto>=0.2.4
+safetensors
+huggingface-hub
+einops
+numpy
+lpips
+Pillow
+PyYAML
+orjson
+tqdm
+bitsandbytes
+wandb
+# H20/H100/H200 and SM100/110: optionally install flash-attn-4 for mask_mod attention.
+# Other CUDA architectures use compiled Flex Attention; CPU/older GPUs use SDPA.
